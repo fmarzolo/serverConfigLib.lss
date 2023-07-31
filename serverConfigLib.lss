@@ -1,0 +1,134 @@
+%REM
+	Library serverConfigLib
+	Created Jul 25, 2023 by Francesco Marzolo
+	Description: Comments for Library
+%END REM
+
+Option Declare
+
+
+%Include "lsconst.lss"
+%REM
+	Class serverConfigDoc
+	Description: ALlows an agent to instantiate the server config for the running Domino server
+	and get setting about Inetlockout configuration and locked out or expired locked out users
+%END REM
+Public Class serverConfigDoc
+	Private ns As NotesSession
+	Private servername As String
+	Private dbnames As NotesDatabase
+	Private docConf As NotesDocument
+	Private ILEnforce As Boolean
+	Private ILLockIP As Boolean
+	Private dtOffsetFromNow As NotesDateTime
+	
+	'expiration
+	Private ILExpMinutes As Long		'minutes to enforce lockout
+	
+	
+	Public Property Get isILLockIP As Boolean
+		isILLockIP=ILLockIP
+	End Property
+	
+	
+	Sub New (ns As NotesSession, servername As String)
+		Set me.ns=ns
+		me.servername=servername
+		
+	
+		Set dbnames=me.ns.Getdatabase(ns.Currentdatabase.Server, "names.nsf", True)
+
+		Dim ViewServerConf As NotesView
+		Set ViewServerConf =dbnames.Getview("($serverconfig)")
+		Set docconf=ViewServerConf.Getdocumentbykey(me.ns.Currentdatabase.Server, True)
+		ILEnforce=False
+		ILLockIP=False
+		If Not docconf Is Nothing Then
+			'there is a config doc
+			If Docconf.ILEnforce(0)="1" Then
+				' internet lockout configured
+				ILEnforce=True			
+				If docconf.ILLockIP(0)="1" Then
+					'IP for Internet lockout enabled
+					ILLockIP=True
+					ILExpMinutes=docConf.ILExpMinutes(0)
+					'calc now to evaluate expired inetlockout, pull time back configured minutes
+					' any "Last failure" older that this 
+					Set dtOffsetFromNow=New NotesDateTime("")
+					Call dtOffsetFromNow.Setnow()
+					Call dtOffsetFromNow.Adjustminute(-ILExpMinutes, True)
+				End If
+			End If
+		End If		
+endop:		
+		Exit Sub
+
+sbreng:
+		Error Err, "Error: " & Err & " - " & Error$ & " ("  &  GetThreadInfo(LSI_THREAD_PROC) & ", line " & Erl & ")"
+		
+	End Sub
+	
+	%REM
+		Function isViewEntryExpired
+		Description: get a notesviewentry from inetlockout and guess if is expired
+	%END REM
+	Public Function isILViewEntryExpired(entry As NotesViewEntry) As Boolean
+		Dim columns As Variant, isLockedOut As Variant, lastfailure As Double, dtLastFailure As NotesDateTime
+		columns=entry.Columnvalues
+		isLockedOut =CStr(columns(2))
+		isLockedOut =LCase(isLockedOut)="yes"
+		lastfailure =columns(5)
+		Set dtLastFailure=ns.Createdatetime(CDat(lastfailure))
+		'Print dtLastFailure.Lslocaltime
+		
+		If dtLastFailure.Timedifference(dtOffsetFromNow)<0 Then
+			'expired
+			isILViewEntryExpired=True
+		Else
+			'not expired
+			isILViewEntryExpired=False
+		End If
+		
+
+		Delete dtLastFailure
+endop:		
+		Exit Function
+sbreng:
+		Error Err, "Error: " & Err & " - " & Error$ & " ("  &  GetThreadInfo(LSI_THREAD_PROC) & ", line " & Erl & ")"
+		
+	End Function
+	
+	Public Function getStrBlacklisted() As String
+		On Error GoTo sbreng
+		Dim vc As NotesViewEntryCollection, dblockout As NotesDatabase, view As NotesView, entry As NotesViewEntry
+		dim tmpColummnValue$, results$
+		Dim doc As NotesDocument
+		Set dblockout = me.ns.Getdatabase(me.ns.Currentdatabase.Server, "inetlockout.nsf", True)
+		If Not dblockout.isopen Then
+			Error 8003, "Unable to find inetlockout.nsf"
+		End If
+		Set view = dblockout.getView("Locked Out Users")
+		Set vc = view.AllEntries
+		Set entry = vc.GetFirstEntry()
+		
+		Do While Not (entry Is Nothing)
+			tmpColummnValue$=entry.Columnvalues(1)
+			If Val(StrLeft(tmpColummnValue,"."))>0 Then
+				If Not me.isILViewEntryExpired(Entry) Then
+          'keep value only if numeric (and for IPv6?
+					results$= results$ & Chr(10) & tmpColummnValue
+				End If
+			End If
+			
+			Set entry = vc.GetNextEntry(entry)
+		Loop
+		
+endop:
+		getStrBlacklisted=results
+		Exit Function
+		
+sbreng:
+		Error Err, "Error: " & Err & " - " & Error$ & " (" &  GetThreadInfo(LSI_THREAD_PROC) & ", line " & Erl & ")"
+	End Function
+	
+End Class
